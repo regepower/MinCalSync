@@ -71,8 +71,8 @@ dependencies {
     // WorkManager
     implementation("androidx.work:work-runtime-ktx:2.8.1")
 
-    // Calendar Provider
-    implementation("androidx.content:content:1.0.0")
+    // Calendar access (CalendarContract, ContentResolver) is part of the Android
+    // framework itself - no separate dependency needed.
 
     // Logging
     implementation("com.jakewharton.timber:timber:5.0.1")
