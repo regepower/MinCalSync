@@ -46,10 +46,12 @@ The app will now automatically sync events at the specified interval in the back
 
 ## How It Works
 
-- **CalendarProvider**: Reads/writes events directly from Android's calendar database
-- **WorkManager**: Handles periodic background sync tasks reliably
-- **Event Deduplication**: Uses event UID to prevent duplicates
-- **Timber Logging**: Detailed logs for debugging
+- **One-way mirror** of the source calendar into the target calendar, window: 30 days back, 365 days ahead
+- **Recurring events** are read via the `Instances` table and copied as single events (moved/cancelled occurrences stay correct)
+- **Ownership tracking**: MinCalSync remembers locally which target events it created. Only those are ever updated or deleted, and only if they still carry the title/start/end it wrote. Events you add to the target calendar yourself are never touched.
+- **No erase-and-rebuild**: an interrupted sync never empties the target calendar
+- Copies older than the window are kept, just no longer updated
+- Deleting a copy in the target calendar: it is re-created on the next sync (mirror semantics)
 
 ## Permissions
 
@@ -60,9 +62,11 @@ The app will now automatically sync events at the specified interval in the back
 
 ## Architecture
 
-- **MainActivity.kt** - UI built with Jetpack Compose
-- **CalendarSyncWorker.kt** - Background sync logic using WorkManager
-- **Theme** - Material Design 3 colors and typography
+- **MainActivity.kt** - Compose UI: pick source/target calendar, interval, status
+- **sync/CalendarMirror.kt** - Mirror logic (create/update/delete with ownership checks)
+- **sync/MirrorStore.kt** - Local record of which target events MinCalSync owns
+- **sync/SyncScheduler.kt** - WorkManager scheduling (periodic + run now)
+- **worker/CalendarSyncWorker.kt** - Background worker, serialized with a mutex
 
 ## Troubleshooting
 

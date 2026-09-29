@@ -1,156 +1,69 @@
 package com.regepower.mincalsync.worker
 
-import android.content.ContentUris
 import android.content.Context
-import android.provider.CalendarContract
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.regepower.mincalsync.sync.CalendarMirror
+import com.regepower.mincalsync.sync.MirrorStore
+import com.regepower.mincalsync.sync.SyncSettings
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
-import java.util.*
+import java.text.DateFormat
+import java.util.Date
+import java.util.concurrent.TimeUnit
 
 class CalendarSyncWorker(
     context: Context,
-    params: WorkerParameters
+    params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
-    override suspend fun doWork(): Result {
-        return try {
-            Timber.d("Starting calendar sync...")
+    override suspend fun doWork(): Result = syncLock.withLock {
+        val settings = SyncSettings(applicationContext)
+        val sourceId = settings.sourceCalendarId
+        val targetId = settings.targetCalendarId
 
-            val sourceCalendarId = getCalendarId("Exchange") // Example: Exchange calendar
-            val targetCalendarId = getCalendarId("Google") // Example: Google Calendar
+        if (sourceId == null || targetId == null || sourceId == targetId) {
+            settings.recordResult("Nicht gestartet: Quell- und Zielkalender wählen")
+            return@withLock Result.failure()
+        }
 
-            if (sourceCalendarId == null || targetCalendarId == null) {
-                Timber.w("Source or target calendar not found")
-                return Result.retry()
-            }
+        val now = System.currentTimeMillis()
+        val windowStart = now - TimeUnit.DAYS.toMillis(PAST_WINDOW_DAYS)
+        val windowEnd = now + TimeUnit.DAYS.toMillis(FUTURE_WINDOW_DAYS)
 
-            syncCalendars(sourceCalendarId, targetCalendarId)
+        try {
+            val stats = CalendarMirror(
+                applicationContext.contentResolver,
+                MirrorStore(applicationContext, targetId),
+            ).run(sourceId, targetId, windowStart, windowEnd)
 
-            Timber.d("Calendar sync completed successfully")
+            val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date())
+            val message = "$time: ${stats.created} neu, ${stats.updated} geändert, " +
+                "${stats.deleted} gelöscht, ${stats.unchanged} unverändert" +
+                if (stats.failed > 0) ", ${stats.failed} Fehler" else ""
+            settings.recordResult(message)
+            Timber.d("Sync done: %s", message)
             Result.success()
+        } catch (e: SecurityException) {
+            settings.recordResult("Fehler: Kalenderberechtigung fehlt")
+            Timber.e(e, "Calendar permission missing")
+            Result.failure()
+        } catch (e: IllegalStateException) {
+            settings.recordResult("Fehler: ${e.message}")
+            Timber.e(e, "Sync aborted")
+            Result.failure()
         } catch (e: Exception) {
-            Timber.e(e, "Calendar sync failed")
+            settings.recordResult("Fehler, neuer Versuch folgt: ${e.message}")
+            Timber.e(e, "Sync failed, will retry")
             Result.retry()
         }
     }
 
-    private fun getCalendarId(calendarName: String): Long? {
-        val uri = CalendarContract.Calendars.CONTENT_URI
-        val projection = arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.CALENDAR_DISPLAY_NAME)
-        val selection = "${CalendarContract.Calendars.CALENDAR_DISPLAY_NAME} LIKE ?"
-        val selectionArgs = arrayOf("%$calendarName%")
-
-        return applicationContext.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                cursor.getLong(cursor.getColumnIndexOrThrow(CalendarContract.Calendars._ID))
-            } else {
-                null
-            }
-        }
+    companion object {
+        /** Periodic and manual runs must never write to the same calendar concurrently. */
+        private val syncLock = Mutex()
+        private const val PAST_WINDOW_DAYS = 30L
+        private const val FUTURE_WINDOW_DAYS = 365L
     }
-
-    private fun syncCalendars(sourceCalendarId: Long, targetCalendarId: Long) {
-        val sourceEvents = getCalendarEvents(sourceCalendarId)
-        Timber.d("Found ${sourceEvents.size} events in source calendar")
-
-        sourceEvents.forEach { event ->
-            addOrUpdateEvent(targetCalendarId, event)
-        }
-    }
-
-    private fun getCalendarEvents(calendarId: Long): List<CalendarEvent> {
-        val events = mutableListOf<CalendarEvent>()
-        val uri = CalendarContract.Events.CONTENT_URI
-        val projection = arrayOf(
-            CalendarContract.Events._ID,
-            CalendarContract.Events.TITLE,
-            CalendarContract.Events.DESCRIPTION,
-            CalendarContract.Events.DTSTART,
-            CalendarContract.Events.DTEND,
-            CalendarContract.Events.RRULE,
-            CalendarContract.Events.UID
-        )
-        val selection = "${CalendarContract.Events.CALENDAR_ID} = ?"
-        val selectionArgs = arrayOf(calendarId.toString())
-
-        applicationContext.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
-            while (cursor.moveToNext()) {
-                events.add(
-                    CalendarEvent(
-                        id = cursor.getLong(cursor.getColumnIndexOrThrow(CalendarContract.Events._ID)),
-                        title = cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Events.TITLE)) ?: "",
-                        description = cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Events.DESCRIPTION)) ?: "",
-                        dtStart = cursor.getLong(cursor.getColumnIndexOrThrow(CalendarContract.Events.DTSTART)),
-                        dtEnd = cursor.getLong(cursor.getColumnIndexOrThrow(CalendarContract.Events.DTEND)),
-                        uid = cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Events.UID)) ?: UUID.randomUUID().toString()
-                    )
-                )
-            }
-        }
-
-        return events
-    }
-
-    private fun addOrUpdateEvent(targetCalendarId: Long, event: CalendarEvent) {
-        val existingEventId = findEventByUid(targetCalendarId, event.uid)
-
-        if (existingEventId != null) {
-            updateEvent(existingEventId, event)
-        } else {
-            createEvent(targetCalendarId, event)
-        }
-    }
-
-    private fun findEventByUid(calendarId: Long, uid: String): Long? {
-        val uri = CalendarContract.Events.CONTENT_URI
-        val projection = arrayOf(CalendarContract.Events._ID)
-        val selection = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.UID} = ?"
-        val selectionArgs = arrayOf(calendarId.toString(), uid)
-
-        return applicationContext.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                cursor.getLong(cursor.getColumnIndexOrThrow(CalendarContract.Events._ID))
-            } else {
-                null
-            }
-        }
-    }
-
-    private fun createEvent(calendarId: Long, event: CalendarEvent) {
-        val contentValues = android.content.ContentValues().apply {
-            put(CalendarContract.Events.CALENDAR_ID, calendarId)
-            put(CalendarContract.Events.TITLE, event.title)
-            put(CalendarContract.Events.DESCRIPTION, event.description)
-            put(CalendarContract.Events.DTSTART, event.dtStart)
-            put(CalendarContract.Events.DTEND, event.dtEnd)
-            put(CalendarContract.Events.UID, event.uid)
-            put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
-        }
-
-        applicationContext.contentResolver.insert(CalendarContract.Events.CONTENT_URI, contentValues)
-        Timber.d("Created event: ${event.title}")
-    }
-
-    private fun updateEvent(eventId: Long, event: CalendarEvent) {
-        val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId)
-        val contentValues = android.content.ContentValues().apply {
-            put(CalendarContract.Events.TITLE, event.title)
-            put(CalendarContract.Events.DESCRIPTION, event.description)
-            put(CalendarContract.Events.DTSTART, event.dtStart)
-            put(CalendarContract.Events.DTEND, event.dtEnd)
-        }
-
-        applicationContext.contentResolver.update(uri, contentValues, null, null)
-        Timber.d("Updated event: ${event.title}")
-    }
-
-    data class CalendarEvent(
-        val id: Long,
-        val title: String,
-        val description: String,
-        val dtStart: Long,
-        val dtEnd: Long,
-        val uid: String
-    )
 }
