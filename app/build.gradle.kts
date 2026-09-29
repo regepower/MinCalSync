@@ -3,6 +3,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Release signing comes from CI (GitHub secrets). Without it the release build stays
+// unsigned, which is fine for local builds but not installable.
+val releaseKeystore: java.io.File? = System.getenv("KEYSTORE_FILE")
+    ?.let { path -> file(path) }
+    ?.takeIf { it.exists() }
+
 android {
     namespace = "com.regepower.mincalsync"
     compileSdk = 35
@@ -20,8 +26,23 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS") ?: "mincalsync"
+                // PKCS12 keystores (keytool default) use the store password for the key.
+                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
