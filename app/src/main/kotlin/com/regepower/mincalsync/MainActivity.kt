@@ -34,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,11 +43,15 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.regepower.mincalsync.sync.CalendarInfo
 import com.regepower.mincalsync.sync.CalendarRepository
+import com.regepower.mincalsync.sync.SyncRunner
 import com.regepower.mincalsync.sync.SyncScheduler
 import com.regepower.mincalsync.sync.SyncSettings
 import com.regepower.mincalsync.ui.theme.MinCalSyncTheme
+import com.regepower.mincalsync.worker.CalendarSyncWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 
@@ -144,6 +149,7 @@ private fun SyncControls(
     var targetId by remember { mutableStateOf(settings.targetCalendarId) }
     var intervalText by remember { mutableStateOf(settings.intervalHours.toString()) }
     var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         CalendarPicker(
@@ -206,6 +212,31 @@ private fun SyncControls(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Automatischen Sync stoppen")
+        }
+
+        OutlinedButton(
+            onClick = {
+                message = "Vorschau läuft …"
+                scope.launch {
+                    message = withContext(Dispatchers.IO) {
+                        CalendarSyncWorker.syncLock.withLock {
+                            try {
+                                SyncRunner.describe(SyncRunner.execute(context, settings, dryRun = true), dryRun = true)
+                            } catch (e: SecurityException) {
+                                "Fehler: Kalenderberechtigung fehlt"
+                            } catch (e: IllegalArgumentException) {
+                                "Fehler: ${e.message}"
+                            } catch (e: IllegalStateException) {
+                                "Fehler: ${e.message}"
+                            }
+                        }
+                    }
+                }
+            },
+            enabled = ready,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Vorschau (ohne Änderungen)")
         }
 
         message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }

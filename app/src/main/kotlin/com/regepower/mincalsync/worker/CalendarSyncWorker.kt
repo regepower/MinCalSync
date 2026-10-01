@@ -3,15 +3,11 @@ package com.regepower.mincalsync.worker
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.regepower.mincalsync.sync.CalendarMirror
-import com.regepower.mincalsync.sync.MirrorStore
+import com.regepower.mincalsync.sync.SyncRunner
 import com.regepower.mincalsync.sync.SyncSettings
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
-import java.text.DateFormat
-import java.util.Date
-import java.util.concurrent.TimeUnit
 
 class CalendarSyncWorker(
     context: Context,
@@ -28,20 +24,9 @@ class CalendarSyncWorker(
             return@withLock Result.failure()
         }
 
-        val now = System.currentTimeMillis()
-        val windowStart = now - TimeUnit.DAYS.toMillis(PAST_WINDOW_DAYS)
-        val windowEnd = now + TimeUnit.DAYS.toMillis(FUTURE_WINDOW_DAYS)
-
         try {
-            val stats = CalendarMirror(
-                applicationContext.contentResolver,
-                MirrorStore(applicationContext, targetId),
-            ).run(sourceId, targetId, windowStart, windowEnd)
-
-            val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date())
-            val message = "$time: ${stats.created} neu, ${stats.updated} geändert, " +
-                "${stats.deleted} gelöscht, ${stats.unchanged} unverändert" +
-                if (stats.failed > 0) ", ${stats.failed} Fehler" else ""
+            val stats = SyncRunner.execute(applicationContext, settings, dryRun = false)
+            val message = SyncRunner.describe(stats, dryRun = false)
             settings.recordResult(message)
             Timber.d("Sync done: %s", message)
             Result.success()
@@ -62,8 +47,6 @@ class CalendarSyncWorker(
 
     companion object {
         /** Periodic and manual runs must never write to the same calendar concurrently. */
-        private val syncLock = Mutex()
-        private const val PAST_WINDOW_DAYS = 30L
-        private const val FUTURE_WINDOW_DAYS = 365L
+        val syncLock = Mutex()
     }
 }

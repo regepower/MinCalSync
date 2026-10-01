@@ -6,7 +6,11 @@ import android.content.ContentValues
 import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 import android.provider.CalendarContract.Instances
+import java.security.MessageDigest
 import java.util.TimeZone
+
+/** Run refused because it would delete suspiciously many copies (e.g. source calendar is still syncing). */
+class SyncAbortedException(message: String) : IllegalStateException(message)
 
 /**
  * One-way mirror of a source calendar into a target calendar, within a time window.
@@ -15,13 +19,20 @@ import java.util.TimeZone
  * moved or cancelled ones) is copied as a single, plain event. That keeps the copy
  * correct without re-implementing recurrence rules and exceptions.
  *
+ * Ownership is proven by a marker line `[mcs:<hash of source key>]` at the end of the
+ * copy's description. The local [MirrorStore] is only a cache: after a phone change or
+ * reinstall the mapping is rebuilt from the markers in the target calendar, so nothing
+ * is duplicated and stale copies are still cleaned up. Copies from older versions (no
+ * marker) are adopted when title/time/description match exactly, or when the local
+ * mapping still proves them via title/start/end.
+ *
  * Safety rules:
- *  - Only rows recorded in [MirrorStore] are ever updated or deleted.
- *  - Before updating or deleting, the row must still carry the title/start/end we wrote
- *    (or already hold the new source values). Anything else is left untouched.
- *  - There is no erase-and-rebuild step; an interrupted run leaves at worst some stale
- *    copies, never an emptied calendar.
- *  - Copies that fall out of the past edge of the window are kept, just no longer tracked.
+ *  - Only rows with our marker, or legacy rows proven by the mapping, are ever changed.
+ *  - Past the window edge copies are kept untouched.
+ *  - A run that would delete more than half of the owned copies (and more than
+ *    [MIN_GUARDED_DELETIONS]) aborts before writing anything, unless the source calendar
+ *    was changed on purpose.
+ *  - There is no erase-and-rebuild step; an interrupted run never empties the calendar.
  */
 class CalendarMirror(
     private val resolver: ContentResolver,
@@ -33,6 +44,7 @@ class CalendarMirror(
         var updated: Int = 0,
         var unchanged: Int = 0,
         var deleted: Int = 0,
+        var adopted: Int = 0,
         var failed: Int = 0,
     )
 
@@ -45,7 +57,13 @@ class CalendarMirror(
         val end: Long,
         val allDay: Boolean,
         val timeZone: String?,
-    )
+    ) {
+        val marker: String = markerFor(key)
+
+        /** Description as stored in the copy, including the ownership marker. */
+        val copyDescription: String =
+            if (description.isBlank()) "[mcs:$marker]" else description.trimEnd() + "\n\n[mcs:$marker]"
+    }
 
     private data class TargetRow(
         val title: String,
@@ -55,87 +73,152 @@ class CalendarMirror(
         val end: Long,
         val allDay: Boolean,
     ) {
+        val marker: String? = MARKER_REGEX.find(description)?.groupValues?.get(1)
+
         fun carriesFingerprint(entry: MirrorEntry) =
             title == entry.title && start == entry.start && end == entry.end
 
         fun hasContentOf(source: SourceInstance) =
-            title == source.title && description == source.description &&
+            title == source.title && description.trim() == source.copyDescription.trim() &&
+                location == source.location && start == source.begin &&
+                end == source.end && allDay == source.allDay
+
+        /** A copy from before markers existed: same content as the source, minus the marker. */
+        fun isLegacyCopyOf(source: SourceInstance) =
+            marker == null && title == source.title && description.trim() == source.description.trim() &&
                 location == source.location && start == source.begin &&
                 end == source.end && allDay == source.allDay
     }
 
-    fun run(sourceCalendarId: Long, targetCalendarId: Long, windowStart: Long, windowEnd: Long): Stats {
+    private class Plan(val source: SourceInstance, val rowId: Long?, val adopted: Boolean)
+
+    fun run(
+        sourceCalendarId: Long,
+        targetCalendarId: Long,
+        windowStart: Long,
+        windowEnd: Long,
+        dryRun: Boolean = false,
+    ): Stats {
         require(sourceCalendarId != targetCalendarId) { "Quelle und Ziel sind identisch" }
         check(calendarExists(sourceCalendarId)) { "Quellkalender nicht gefunden" }
         check(isWritable(targetCalendarId)) { "Zielkalender fehlt oder ist nicht beschreibbar" }
 
-        val sourceInstances = readSourceInstances(sourceCalendarId, windowStart, windowEnd)
-        val targetRows = readTargetRows(targetCalendarId)
+        val sources = readSourceInstances(sourceCalendarId, windowStart, windowEnd)
+        val rows = readTargetRows(targetCalendarId)
         val mapping = store.load()
         val stats = Stats()
-        val seenKeys = HashSet<String>()
 
-        for (source in sourceInstances) {
-            seenKeys += source.key
+        // --- Plan: decide which target row (if any) belongs to each source instance. ---
+        val markedRows = HashMap<String, MutableList<Long>>()
+        val legacyRows = HashMap<String, MutableList<Long>>()
+        for ((id, row) in rows.entries.sortedBy { it.key }) {
+            val marker = row.marker
+            if (marker != null) {
+                markedRows.getOrPut(marker) { mutableListOf() } += id
+            } else {
+                legacyRows.getOrPut(legacyKey(row.title, row.start, row.end, row.allDay)) { mutableListOf() } += id
+            }
+        }
+
+        val claimed = HashSet<Long>()
+        val plans = ArrayList<Plan>(sources.size)
+        for (source in sources) {
             val entry = mapping[source.key]
-            val row = entry?.let { targetRows[it.targetEventId] }
+            val mappedId = entry?.targetEventId?.takeIf { id ->
+                val row = rows[id]
+                row != null && (row.marker == source.marker || (row.marker == null && row.carriesFingerprint(entry)))
+            }
+            val markedId = markedRows[source.marker]?.firstOrNull { it !in claimed }
+            val legacyId = legacyRows[legacyKey(source.title, source.begin, source.end, source.allDay)]
+                ?.firstOrNull { it !in claimed && rows.getValue(it).isLegacyCopyOf(source) }
 
-            when {
-                entry != null && row != null && row.hasContentOf(source) -> {
-                    stats.unchanged++
-                    val current = entry.copy(title = source.title, start = source.begin, end = source.end)
-                    if (current != entry) {
-                        mapping[source.key] = current
-                        store.save(mapping)
-                    }
-                }
+            val rowId = mappedId?.takeIf { it !in claimed } ?: markedId ?: legacyId
+            if (rowId != null) claimed += rowId
+            plans += Plan(source, rowId, adopted = rowId != null && entry?.targetEventId != rowId)
+        }
 
-                entry != null && row != null && row.carriesFingerprint(entry) -> {
-                    if (updateEvent(entry.targetEventId, source)) {
-                        mapping[source.key] = entry.copy(title = source.title, start = source.begin, end = source.end)
-                        store.save(mapping)
-                        stats.updated++
-                    } else {
-                        stats.failed++
-                    }
-                }
-
-                else -> {
-                    // Not copied yet, or the old copy is gone / no longer provably ours.
-                    val newId = insertEvent(targetCalendarId, source)
-                    if (newId != null) {
-                        mapping[source.key] = MirrorEntry(newId, source.title, source.begin, source.end)
-                        store.save(mapping)
-                        stats.created++
-                    } else {
-                        stats.failed++
-                    }
-                }
+        // --- Deletions: our copies (marker, or legacy via mapping) that no source instance claims. ---
+        val seenKeys = sources.mapTo(HashSet()) { it.key }
+        val deletions = LinkedHashSet<Long>()
+        for ((id, row) in rows) {
+            if (id in claimed || row.marker == null || row.start < windowStart) continue
+            deletions += id
+        }
+        for ((key, entry) in mapping) {
+            val row = rows[entry.targetEventId] ?: continue
+            if (key !in seenKeys && entry.targetEventId !in claimed && row.marker == null &&
+                entry.start >= windowStart && row.carriesFingerprint(entry)
+            ) {
+                deletions += entry.targetEventId
             }
         }
 
-        val iterator = mapping.entries.iterator()
-        while (iterator.hasNext()) {
-            val (key, entry) = iterator.next()
-            if (key in seenKeys) continue
-            val row = targetRows[entry.targetEventId]
-            when {
-                row == null -> iterator.remove()
-                entry.start < windowStart -> iterator.remove()
-                !row.carriesFingerprint(entry) -> iterator.remove()
-                else -> {
-                    if (deleteEvent(entry.targetEventId)) {
-                        iterator.remove()
-                        stats.deleted++
-                    } else {
-                        stats.failed++
+        val owned = claimed.size + deletions.size
+        val sourceChanged = store.lastSourceId?.let { it != sourceCalendarId } ?: false
+        if (!sourceChanged && deletions.size > MIN_GUARDED_DELETIONS && deletions.size * 2 > owned) {
+            throw SyncAbortedException(
+                "Abbruch: ${deletions.size} von $owned Kopien würden gelöscht " +
+                    "(Quellkalender evtl. noch nicht synchronisiert). Nichts geändert.",
+            )
+        }
+
+        // --- Apply. The mapping is only a cache, so it is written once at the end. ---
+        val newMapping = mutableMapOf<String, MirrorEntry>()
+        try {
+            for (plan in plans) {
+                val source = plan.source
+                val row = plan.rowId?.let { rows[it] }
+                when {
+                    plan.rowId != null && row != null && row.hasContentOf(source) -> {
+                        stats.unchanged++
+                        if (plan.adopted) stats.adopted++
+                        newMapping[source.key] = entryFor(plan.rowId, source)
+                    }
+
+                    plan.rowId != null && row != null -> {
+                        if (dryRun || updateEvent(plan.rowId, source)) {
+                            if (plan.adopted) stats.adopted++
+                            stats.updated++
+                            newMapping[source.key] = entryFor(plan.rowId, source)
+                        } else {
+                            stats.failed++
+                            newMapping[source.key] = MirrorEntry(plan.rowId, row.title, row.start, row.end)
+                        }
+                    }
+
+                    else -> {
+                        if (dryRun) {
+                            stats.created++
+                        } else {
+                            val newId = insertEvent(targetCalendarId, source)
+                            if (newId != null) {
+                                newMapping[source.key] = entryFor(newId, source)
+                                stats.created++
+                            } else {
+                                stats.failed++
+                            }
+                        }
                     }
                 }
             }
+
+            for (id in deletions) {
+                if (dryRun || deleteEvent(id)) stats.deleted++ else stats.failed++
+            }
+        } finally {
+            if (!dryRun) {
+                store.save(newMapping)
+                store.lastSourceId = sourceCalendarId
+            }
         }
-        store.save(mapping)
         return stats
     }
+
+    private fun entryFor(rowId: Long, source: SourceInstance) =
+        MirrorEntry(rowId, source.title, source.begin, source.end)
+
+    private fun legacyKey(title: String, start: Long, end: Long, allDay: Boolean) =
+        "$start|$end|$allDay|$title"
 
     private fun calendarExists(calendarId: Long): Boolean =
         resolver.query(
@@ -260,7 +343,7 @@ class CalendarMirror(
 
     private fun contentValuesFor(source: SourceInstance) = ContentValues().apply {
         put(Events.TITLE, source.title)
-        put(Events.DESCRIPTION, source.description)
+        put(Events.DESCRIPTION, source.copyDescription)
         put(Events.EVENT_LOCATION, source.location)
         put(Events.DTSTART, source.begin)
         put(Events.DTEND, source.end)
@@ -299,4 +382,12 @@ class CalendarMirror(
     } catch (e: RuntimeException) {
         onError
     }
+}
+
+private const val MIN_GUARDED_DELETIONS = 10
+private val MARKER_REGEX = Regex("""\[mcs:([0-9a-f]{16})]\s*$""")
+
+private fun markerFor(key: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray(Charsets.UTF_8))
+    return digest.take(8).joinToString("") { "%02x".format(it) }
 }
