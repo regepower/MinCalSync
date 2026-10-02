@@ -20,6 +20,10 @@ class SyncSettings(context: Context) {
         get() = prefs.getLong(KEY_INTERVAL, DEFAULT_INTERVAL_HOURS)
         set(value) = prefs.edit().putLong(KEY_INTERVAL, value).apply()
 
+    var autoSync: Boolean
+        get() = prefs.getBoolean(KEY_AUTO, false)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO, value).apply()
+
     val lastResult: String?
         get() = prefs.getString(KEY_LAST_RESULT, null)
 
@@ -38,6 +42,7 @@ class SyncSettings(context: Context) {
         private const val KEY_SOURCE = "source_calendar_id"
         private const val KEY_TARGET = "target_calendar_id"
         private const val KEY_INTERVAL = "interval_hours"
+        private const val KEY_AUTO = "auto_sync"
         private const val KEY_LAST_RESULT = "last_result"
         private const val KEY_LAST_RUN = "last_run"
         private const val NO_ID = -1L

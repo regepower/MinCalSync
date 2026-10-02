@@ -28,7 +28,7 @@ Download the latest APK from [Releases](https://github.com/regepower/MinCalSync/
 ```bash
 git clone https://github.com/regepower/MinCalSync.git
 cd MinCalSync
-./gradlew assembleRelease
+gradle assembleRelease   # Gradle 8.11.1, JDK 17
 ```
 
 The APK will be generated at `app/build/outputs/apk/release/app-release-unsigned.apk`.
@@ -62,11 +62,15 @@ The app will now automatically sync events at the specified interval in the back
 
 ## Architecture
 
-- **MainActivity.kt** - Compose UI: pick source/target calendar, interval, status
+No libraries: framework APIs only, release APK is a few dozen KB.
+
+- **MainActivity.kt** - UI built from plain views, Material You colors (dynamic on Android 12+)
 - **sync/CalendarMirror.kt** - Mirror logic (create/update/delete with ownership checks)
 - **sync/MirrorStore.kt** - Local record of which target events MinCalSync owns
-- **sync/SyncScheduler.kt** - WorkManager scheduling (periodic + run now)
-- **worker/CalendarSyncWorker.kt** - Background worker, serialized with a mutex
+- **sync/SyncRunner.kt** - One sync run, serialized, writes the status line
+- **sync/SyncJobService.kt** / **sync/SyncScheduler.kt** - Periodic sync via JobScheduler (persisted across reboots)
+
+Build: GitHub Actions (`lintDebug` + signed `assembleRelease`), artifact `MinCalSync-release`.
 
 ## Troubleshooting
 

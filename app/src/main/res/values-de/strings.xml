@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="help">Hilfe</string>
+    <string name="help_ok">Verstanden</string>
+
+    <string name="perm_missing">MinCalSync braucht Zugriff auf deine Kalender.</string>
+    <string name="btn_allow_calendar">Kalenderzugriff erlauben</string>
+
+    <string name="section_calendars">Kalender</string>
+    <string name="label_source">Quelle (z. B. Exchange)</string>
+    <string name="label_target">Ziel (z. B. Google)</string>
+    <string name="pick_calendar">Auswählen…</string>
+    <string name="pick_source_title">Quellkalender</string>
+    <string name="pick_target_title">Zielkalender (nur beschreibbare)</string>
+    <string name="no_calendars">Kein passender Kalender gefunden</string>
+    <string name="help_target">Tipp: In Google Kalender einen leeren Kalender anlegen und als Ziel wählen.</string>
+
+    <string name="section_auto">Automatischer Sync</string>
+    <string name="auto_switch">Automatisch synchronisieren</string>
+    <string name="interval_label">Alle</string>
+    <string name="interval_unit">Stunden</string>
+    <string name="interval_help">Stunden zwischen zwei automatischen Syncs (1–168)</string>
+    <string name="btn_sync_now">Jetzt synchronisieren</string>
+    <string name="btn_battery">Keine Akku-Einschränkung</string>
+    <string name="help_battery">Erlaubt dem System, den Sync im Hintergrund auszuführen. Wichtig bei Xiaomi/HyperOS.</string>
+
+    <string name="section_status">Letzter Sync</string>
+    <string name="status_never">Noch kein Sync</string>
+    <string name="status_running">Synchronisiere…</string>
+
+    <string name="result_ok">%1$s: %2$d neu, %3$d geändert, %4$d gelöscht, %5$d unverändert</string>
+    <string name="result_failed_suffix">, %1$d Fehler</string>
+    <string name="result_not_configured">Nicht gestartet: Quell- und Zielkalender wählen</string>
+    <string name="result_no_permission">Fehler: Kalenderberechtigung fehlt</string>
+    <string name="result_source_missing">Fehler: Quellkalender nicht gefunden</string>
+    <string name="result_target_not_writable">Fehler: Zielkalender fehlt oder ist schreibgeschützt</string>
+    <string name="result_retry">Fehler (%1$s), neuer Versuch folgt</string>
+
+    <string name="help_text"><b>Was macht die App?</b>\nSie kopiert Termine aus einem Quellkalender (z. B. Exchange) in einen Zielkalender (z. B. Google). Nur in eine Richtung: Änderungen im Ziel werden nicht zurückgeschrieben.\n\n<b>Einrichtung</b>\n1. Exchange- und Google-Konto müssen in Android eingerichtet sein und ihre Kalender synchronisieren.\n2. In Google Kalender einen leeren Kalender anlegen (z. B. \"Arbeit\") und als Ziel wählen. So bleiben Kopien und eigene Termine getrennt.\n3. Quelle und Ziel wählen, automatischen Sync einschalten.\n\n<b>Google Home</b>\nGoogle-Home-App → Profil → Home-Einstellungen → Google Assistant → Kalender: Zielkalender aktivieren. \"Persönliche Ergebnisse\" müssen eingeschaltet sein.\n\n<b>Was wird synchronisiert?</b>\nTermine von 30 Tagen zurück bis 365 Tage voraus. Serientermine werden als einzelne Termine kopiert. Ältere Kopien bleiben erhalten, werden aber nicht mehr aktualisiert.\n\n<b>Sicherheit</b>\nMinCalSync ändert oder löscht nur Termine, die es selbst angelegt hat. Eigene Termine im Zielkalender werden nie angefasst. Löschst du eine Kopie von Hand, legt der nächste Sync sie wieder an, solange sie in der Quelle existiert.\n\n<b>Sync läuft nicht?</b>\nXiaomi/HyperOS beendet Hintergrund-Apps gern. \"Keine Akku-Einschränkung\" antippen und unter Einstellungen → Apps → MinCalSync Autostart erlauben.</string>
+</resources>

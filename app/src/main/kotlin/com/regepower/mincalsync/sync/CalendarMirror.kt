@@ -8,6 +8,11 @@ import android.provider.CalendarContract.Events
 import android.provider.CalendarContract.Instances
 import java.util.TimeZone
 
+/** A sync that cannot start because the chosen calendars are unusable; retrying won't help. */
+class SyncException(val reason: Reason) : Exception(reason.name) {
+    enum class Reason { SAME_CALENDAR, SOURCE_MISSING, TARGET_NOT_WRITABLE }
+}
+
 /**
  * One-way mirror of a source calendar into a target calendar, within a time window.
  *
@@ -65,9 +70,9 @@ class CalendarMirror(
     }
 
     fun run(sourceCalendarId: Long, targetCalendarId: Long, windowStart: Long, windowEnd: Long): Stats {
-        require(sourceCalendarId != targetCalendarId) { "Quelle und Ziel sind identisch" }
-        check(calendarExists(sourceCalendarId)) { "Quellkalender nicht gefunden" }
-        check(isWritable(targetCalendarId)) { "Zielkalender fehlt oder ist nicht beschreibbar" }
+        if (sourceCalendarId == targetCalendarId) throw SyncException(SyncException.Reason.SAME_CALENDAR)
+        if (!calendarExists(sourceCalendarId)) throw SyncException(SyncException.Reason.SOURCE_MISSING)
+        if (!isWritable(targetCalendarId)) throw SyncException(SyncException.Reason.TARGET_NOT_WRITABLE)
 
         val sourceInstances = readSourceInstances(sourceCalendarId, windowStart, windowEnd)
         val targetRows = readTargetRows(targetCalendarId)

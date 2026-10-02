@@ -2,10 +2,10 @@ name: Build
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,47 +13,69 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-      KEY_ALIAS: mincalsync
-
     steps:
-    - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        cache: gradle
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
 
-    - name: Restore signing keystore
-      env:
-        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-      run: |
-        if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
-          echo "::error::Secrets KEYSTORE_BASE64 / KEYSTORE_PASSWORD fehlen"
-          exit 1
-        fi
-        KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
-        echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
-        echo "KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: "8.11.1"
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+      - name: Lint + Debug build
+        run: gradle --no-daemon lintDebug assembleDebug
 
-    - name: Build
-      run: ./gradlew build assembleRelease
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v6
-      with:
-        name: mincalsync-apk
-        path: app/build/outputs/apk/release/*.apk
-        if-no-files-found: error
+      - name: Release build (signed)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: mincalsync
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Secrets KEYSTORE_BASE64 / KEYSTORE_PASSWORD fehlen"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          export KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
+          gradle --no-daemon assembleRelease
 
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v3
-      with:
-        files: app/build/outputs/apk/release/*.apk
+      - name: Size report
+        if: always()
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk)
+          echo "APK_BYTES=$(stat -c %s "$APK")" >> "$GITHUB_ENV"
+          AM="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+          "$AM" dex packages --defined-only --proguard-folder app/build/outputs/mapping/release "$APK" > "$RUNNER_TEMP/dex.txt" || true
+          {
+            echo "## APK sizes (bytes)"
+            ls -l app/build/outputs/apk/*/*.apk | awk '{print $5, $9}'
+            echo "## Release content (uncompressed compressed name)"
+            unzip -lv "$APK" | awk 'NR>3 {print $1, $3, $8}'
+            echo "## Dex size by top-level package (bytes)"
+            awk -F'\t' '$1 ~ /^P/ {n=split($4,a,"."); if (n<=2) print $3, $4}' "$RUNNER_TEMP/dex.txt" | sort -rn | head -15
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: "Release APK: ${{ env.APK_BYTES }} bytes"
+        run: echo "release apk ${{ env.APK_BYTES }} bytes"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: MinCalSync-release
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: app/build/outputs/apk/release/*.apk

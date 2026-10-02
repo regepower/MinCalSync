@@ -3,108 +3,66 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Release signing comes from CI (GitHub secrets). Without it the release build stays
-// unsigned, which is fine for local builds but not installable.
-val releaseKeystore: java.io.File? = System.getenv("KEYSTORE_FILE")
-    ?.let { path -> file(path) }
-    ?.takeIf { it.exists() }
-
 android {
     namespace = "com.regepower.mincalsync"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.regepower.mincalsync"
-        minSdk = 28
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary = true
-        }
+        minSdk = 29
+        targetSdk = 36
+        versionCode = 2
+        versionName = "1.1.0"
     }
 
-    signingConfigs {
-        if (releaseKeystore != null) {
+    // Release key comes from CI secrets. Always the same key, otherwise updates need a
+    // reinstall and MinCalSync loses its record of which target events it owns.
+    val keystorePath: String? = System.getenv("KEYSTORE_FILE")
+    if (keystorePath != null) {
+        signingConfigs {
             create("release") {
-                storeFile = releaseKeystore
+                storeFile = file(keystorePath)
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS") ?: "mincalsync"
-                // PKCS12 keystores (keytool default) use the store password for the key.
-                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+                // keytool's default PKCS12 keystores use the store password for the key.
+                keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
             }
         }
     }
 
     buildTypes {
         release {
-            if (releaseKeystore != null) {
-                signingConfig = signingConfigs.getByName("release")
-            }
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            // Local builds without secrets: debug key, so the APK stays installable.
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
-
-    kotlinOptions {
-        jvmTarget = "11"
-    }
-
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.10"
-    }
-
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
         }
     }
+
+    // Deflate classes.dex (AGP stores it uncompressed for minSdk >= 28) and drop Kotlin
+    // metadata nobody reads at runtime. Both measured in the android-app-builder skill.
+    packaging {
+        dex { useLegacyPackaging = true }
+        resources {
+            excludes += setOf("kotlin/**", "kotlin-tooling-metadata.json", "META-INF/*.version")
+        }
+    }
+
+    lint {
+        abortOnError = true
+        warningsAsErrors = false
+    }
 }
 
-dependencies {
-    // Core
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
-
-    // Compose
-    implementation("androidx.activity:activity-compose:1.8.1")
-    implementation(platform("androidx.compose:compose-bom:2023.10.01"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3:1.1.2")
-    implementation("androidx.compose.material:material-icons-extended:1.5.4")
-
-    // WorkManager
-    implementation("androidx.work:work-runtime-ktx:2.8.1")
-
-    // Calendar access (CalendarContract, ContentResolver) is part of the Android
-    // framework itself - no separate dependency needed.
-
-    // Logging
-    implementation("com.jakewharton.timber:timber:5.0.1")
-
-    // Testing
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    androidTestImplementation(platform("androidx.compose:compose-bom:2023.10.01"))
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
-}
+// No dependencies on purpose: framework APIs only (JobScheduler, CalendarContract, views).
