@@ -14,7 +14,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      KEYSTORE_FILE: ${{ runner.temp }}/release.jks
       KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
       KEY_ALIAS: mincalsync
 
@@ -36,7 +35,9 @@ jobs:
           echo "::error::Secrets KEYSTORE_BASE64 / KEYSTORE_PASSWORD fehlen"
           exit 1
         fi
+        KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
         echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+        echo "KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
