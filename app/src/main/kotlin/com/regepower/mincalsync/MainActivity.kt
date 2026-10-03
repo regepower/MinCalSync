@@ -100,7 +100,7 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
-        AppShell.onResult(this, requestCode, resultCode, data, settings.prefs, SyncSettings.DEVICE_KEYS) {
+        AppShell.onResult(this, requestCode, resultCode, data, settings.prefs, SyncSettings.DEVICE_KEYS::contains) {
             if (settings.autoSync) SyncScheduler.schedulePeriodic(this, settings.intervalHours) else SyncScheduler.cancel(this)
             recreate()
         }

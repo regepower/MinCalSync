@@ -62,7 +62,7 @@ object AppShell {
         resultCode: Int,
         data: Intent?,
         sp: SharedPreferences,
-        keep: Set<String> = emptySet(),
+        keep: (String) -> Boolean = { false },
         onLoaded: () -> Unit = { a.recreate() }
     ): Boolean {
         if (requestCode != REQ_SAVE && requestCode != REQ_LOAD) return false
@@ -101,7 +101,7 @@ object AppShell {
         a.startActivityForResult(i, REQ_LOAD)
     }
 
-    private fun save(a: Activity, uri: Uri, sp: SharedPreferences, keep: Set<String>) {
+    private fun save(a: Activity, uri: Uri, sp: SharedPreferences, keep: (String) -> Boolean) {
         try {
             a.contentResolver.openOutputStream(uri, "wt")?.use {
                 it.write(ConfigIO.toJson(sp, a.getString(R.string.app_name), keep).toByteArray())
@@ -113,7 +113,7 @@ object AppShell {
         }
     }
 
-    private fun load(a: Activity, uri: Uri, sp: SharedPreferences, keep: Set<String>, onLoaded: () -> Unit) {
+    private fun load(a: Activity, uri: Uri, sp: SharedPreferences, keep: (String) -> Boolean, onLoaded: () -> Unit) {
         val json = try {
             a.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
         } catch (e: IOException) {
