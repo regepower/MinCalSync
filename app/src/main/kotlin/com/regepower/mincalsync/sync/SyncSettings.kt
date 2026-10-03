@@ -1,11 +1,13 @@
 package com.regepower.mincalsync.sync
 
 import android.content.Context
+import android.content.SharedPreferences
 
 /** User choices (source, target, interval) plus the outcome of the last sync run. */
 class SyncSettings(context: Context) {
 
-    private val prefs = context.applicationContext
+    /** Raw store, also used for config export/import. */
+    val prefs: SharedPreferences = context.applicationContext
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     var sourceCalendarId: Long?
@@ -38,6 +40,9 @@ class SyncSettings(context: Context) {
     }
 
     companion object {
+        /** Calendar IDs differ per phone and the last result is runtime state: not exported. */
+        val DEVICE_KEYS = setOf(KEY_SOURCE, KEY_TARGET, KEY_LAST_RESULT, KEY_LAST_RUN)
+
         private const val PREFS_NAME = "mincalsync_settings"
         private const val KEY_SOURCE = "source_calendar_id"
         private const val KEY_TARGET = "target_calendar_id"

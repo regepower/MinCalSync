@@ -97,6 +97,15 @@ class MainActivity : Activity() {
     }
 
     // Plain Activity API: AndroidX ActivityResult would cost far more than it saves.
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        AppShell.onResult(this, requestCode, resultCode, data, settings.prefs, SyncSettings.DEVICE_KEYS) {
+            if (settings.autoSync) SyncScheduler.schedulePeriodic(this, settings.intervalHours) else SyncScheduler.cancel(this)
+            recreate()
+        }
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CALENDAR) refresh()
@@ -110,28 +119,7 @@ class MainActivity : Activity() {
             setPadding(px(16), px(8), px(16), px(16))
         }
 
-        val headerRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        headerRow.addView(
-            TextView(this).apply {
-                text = getString(R.string.app_name)
-                textSize = 22f
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(getColor(R.color.md_on_container))
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        headerRow.addView(
-            ImageButton(this).apply {
-                setImageResource(R.drawable.ic_help)
-                imageTintList = ColorStateList.valueOf(getColor(R.color.md_primary))
-                background = rippleBackground()
-                contentDescription = getString(R.string.help)
-                tooltipText = getString(R.string.help)
-                setOnClickListener { showHelp() }
-            },
-            LinearLayout.LayoutParams(px(48), px(48)),
-        )
-        root.addView(headerRow)
+        root.addView(AppShell.header(this))
 
         permissionBox = card().apply {
             addView(TextView(context).apply { text = getString(R.string.perm_missing) })
@@ -341,13 +329,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showHelp() {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.help)
-            .setMessage(getText(R.string.help_text))
-            .setPositiveButton(R.string.help_ok, null)
-            .show()
-    }
+    private fun showHelp() = AppShell.showHelp(this)
 
     private fun isConfigured(): Boolean {
         val source = settings.sourceCalendarId
@@ -393,12 +375,6 @@ class MainActivity : Activity() {
         b.minHeight = 0
         b.minimumHeight = px(44)
         b.setPadding(px(16), px(8), px(16), px(8))
-    }
-
-    private fun rippleBackground() = obtainStyledAttributes(
-        intArrayOf(android.R.attr.selectableItemBackgroundBorderless),
-    ).let { attrs ->
-        attrs.getDrawable(0).also { attrs.recycle() }
     }
 
     private fun fullWidth(top: Int = 0) =
