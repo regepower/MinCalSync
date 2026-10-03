@@ -63,7 +63,7 @@ class MainActivity : Activity() {
         settings = SyncSettings(this)
         setContentView(buildLayout())
         // First start: explain the app before anything is configured.
-        if (savedInstanceState == null && settings.sourceCalendarId == null) showHelp()
+        if (savedInstanceState == null && !settings.isSourceChosen) showHelp()
     }
 
     override fun onResume() {
@@ -208,14 +208,15 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 calendars = loaded
+                settings.refreshIds(loaded)
                 refreshCalendarButtons()
             }
         }.start()
     }
 
     private fun refreshCalendarButtons() {
-        showChoice(sourceBtn, calendars.firstOrNull { it.id == settings.sourceCalendarId })
-        showChoice(targetBtn, calendars.firstOrNull { it.id == settings.targetCalendarId })
+        showChoice(sourceBtn, settings.source(calendars))
+        showChoice(targetBtn, settings.target(calendars))
         val ready = isConfigured()
         syncNowBtn.isEnabled = ready && !syncRunning
         autoSwitch.isEnabled = ready
@@ -232,29 +233,34 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun pickSource() = pickCalendar(R.string.pick_source_title, calendars, settings.sourceCalendarId) { id ->
-        settings.sourceCalendarId = id
-        if (settings.targetCalendarId == id) settings.targetCalendarId = null
+    private fun pickSource() = pickCalendar(R.string.pick_source_title, calendars, settings.source(calendars)) { cal ->
+        settings.setSource(cal)
+        if (settings.target(calendars)?.id == cal.id) settings.setTarget(null)
         onCalendarsChanged()
     }
 
     private fun pickTarget() = pickCalendar(
         R.string.pick_target_title,
-        calendars.filter { it.writable && it.id != settings.sourceCalendarId },
-        settings.targetCalendarId,
-    ) { id ->
-        settings.targetCalendarId = id
+        calendars.filter { it.writable && it.id != settings.source(calendars)?.id },
+        settings.target(calendars),
+    ) { cal ->
+        settings.setTarget(cal)
         onCalendarsChanged()
     }
 
-    private fun pickCalendar(title: Int, options: List<CalendarInfo>, selected: Long?, onPick: (Long) -> Unit) {
+    private fun pickCalendar(
+        title: Int,
+        options: List<CalendarInfo>,
+        selected: CalendarInfo?,
+        onPick: (CalendarInfo) -> Unit,
+    ) {
         val builder = AlertDialog.Builder(this).setTitle(title)
         if (options.isEmpty()) {
             builder.setMessage(R.string.no_calendars).setPositiveButton(android.R.string.ok, null)
         } else {
             val labels = options.map { it.label }.toTypedArray()
-            builder.setSingleChoiceItems(labels, options.indexOfFirst { it.id == selected }) { dialog, which ->
-                onPick(options[which].id)
+            builder.setSingleChoiceItems(labels, options.indexOfFirst { it.id == selected?.id }) { dialog, which ->
+                onPick(options[which])
                 dialog.dismiss()
             }
         }
@@ -332,10 +338,9 @@ class MainActivity : Activity() {
     private fun showHelp() = AppShell.showHelp(this)
 
     private fun isConfigured(): Boolean {
-        val source = settings.sourceCalendarId
-        val target = settings.targetCalendarId
-        return source != null && target != null && source != target &&
-            calendars.any { it.id == source } && calendars.any { it.id == target }
+        val source = settings.source(calendars)
+        val target = settings.target(calendars)
+        return source != null && target != null && source.id != target.id
     }
 
     private fun hasCalendarPermission() = CALENDAR_PERMISSIONS.all {

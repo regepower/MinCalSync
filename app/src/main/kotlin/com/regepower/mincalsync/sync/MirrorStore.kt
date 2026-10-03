@@ -14,23 +14,30 @@ data class MirrorEntry(
     val title: String,
     val start: Long,
     val end: Long,
+    /** We wrote the marker once. If the server strips it, don't rewrite the copy every run. */
+    val marked: Boolean = false,
 )
 
 /**
  * Remembers which target-calendar rows MinCalSync created, keyed by source instance.
- * Stored per target calendar, so switching targets never lets us touch the old one.
+ * Stored per target calendar identity, so switching targets never lets us touch the old one.
+ * Only a cache: copies also carry an invisible marker (see [CopyMarker]), so a lost map
+ * (new phone, account re-added) is rebuilt instead of producing duplicates.
  *
  * Kept locally because the CalendarProvider only lets sync adapters write
  * ExtendedProperties, so ownership can't be tagged on the event itself.
  */
-class MirrorStore(context: Context, targetCalendarId: Long) {
+class MirrorStore(context: Context, target: CalendarRef, private val legacyTargetId: Long?) {
 
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    private val storageKey = "map_$targetCalendarId"
+    private val storageKey = "ref_" + target.encode()
 
     fun load(): MutableMap<String, MirrorEntry> {
-        val raw = prefs.getString(storageKey, null) ?: return mutableMapOf()
+        // Versions before 1.2 keyed the map by calendar row ID.
+        val raw = prefs.getString(storageKey, null)
+            ?: legacyTargetId?.let { prefs.getString("map_$it", null) }
+            ?: return mutableMapOf()
         val result = mutableMapOf<String, MirrorEntry>()
         val json = JSONObject(raw)
         val keys = json.keys()
@@ -42,6 +49,7 @@ class MirrorStore(context: Context, targetCalendarId: Long) {
                 title = item.optString("t", ""),
                 start = item.getLong("s"),
                 end = item.getLong("e"),
+                marked = item.optBoolean("m", false),
             )
         }
         return result
@@ -57,10 +65,13 @@ class MirrorStore(context: Context, targetCalendarId: Long) {
                     .put("id", entry.targetEventId)
                     .put("t", entry.title)
                     .put("s", entry.start)
-                    .put("e", entry.end),
+                    .put("e", entry.end)
+                    .put("m", entry.marked),
             )
         }
-        prefs.edit().putString(storageKey, json.toString()).commit()
+        val editor = prefs.edit().putString(storageKey, json.toString())
+        legacyTargetId?.let { editor.remove("map_$it") }
+        editor.commit()
     }
 
     companion object {

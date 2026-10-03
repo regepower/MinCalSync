@@ -22,10 +22,7 @@ object SyncRunner {
     fun run(context: Context): Outcome = synchronized(lock) {
         val app = context.applicationContext
         val settings = SyncSettings(app)
-        val sourceId = settings.sourceCalendarId
-        val targetId = settings.targetCalendarId
-
-        if (sourceId == null || targetId == null || sourceId == targetId) {
+        if (!settings.isSourceChosen || (settings.targetRef == null && settings.targetCalendarId == null)) {
             settings.recordResult(app.getString(R.string.result_not_configured))
             return Outcome.FAILED
         }
@@ -35,8 +32,19 @@ object SyncRunner {
         val windowEnd = now + TimeUnit.DAYS.toMillis(FUTURE_WINDOW_DAYS)
 
         try {
-            val stats = CalendarMirror(app.contentResolver, MirrorStore(app, targetId))
-                .run(sourceId, targetId, windowStart, windowEnd)
+            // Calendars are found by account + name; row IDs may differ from the saved ones.
+            val calendars = CalendarRepository(app.contentResolver).loadCalendars()
+            val legacyTargetId = settings.targetCalendarId
+            val source = settings.source(calendars) ?: throw SyncException(SyncException.Reason.SOURCE_MISSING)
+            val target = settings.target(calendars) ?: throw SyncException(SyncException.Reason.TARGET_NOT_WRITABLE)
+            if (source.id == target.id) throw SyncException(SyncException.Reason.SAME_CALENDAR)
+            settings.refreshIds(calendars)
+
+            val stats = CalendarMirror(
+                app.contentResolver,
+                MirrorStore(app, target.ref, legacyTargetId),
+                CopyMarker.tagFor(source.ref),
+            ).run(source.id, target.id, windowStart, windowEnd)
             val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date())
             var message = app.getString(
                 R.string.result_ok, time, stats.created, stats.updated, stats.deleted, stats.unchanged,
