@@ -1,3 +1,5 @@
+import java.security.KeyStore
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,15 +19,23 @@ android {
 
     // Release key comes from CI secrets. Always the same key, otherwise updates need a
     // reinstall and MinCalSync loses its record of which target events it owns.
+    // Only KEYSTORE_BASE64 + KEYSTORE_PASSWORD are required: without KEY_ALIAS the first alias in
+    // the keystore is used, without KEY_PASSWORD the store password (keytool PKCS12 default).
     val keystorePath: String? = System.getenv("KEYSTORE_FILE")
     if (keystorePath != null) {
+        val storePw = System.getenv("KEYSTORE_PASSWORD").orEmpty()
+        val alias =
+            System.getenv("KEY_ALIAS")?.takeIf { it.isNotBlank() }
+                ?: KeyStore.getInstance(KeyStore.getDefaultType()).run {
+                    file(keystorePath).inputStream().use { load(it, storePw.toCharArray()) }
+                    aliases().nextElement()
+                }
         signingConfigs {
             create("release") {
                 storeFile = file(keystorePath)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS") ?: "mincalsync"
-                // keytool's default PKCS12 keystores use the store password for the key.
-                keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
+                storePassword = storePw
+                keyAlias = alias
+                keyPassword = System.getenv("KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: storePw
             }
         }
     }
