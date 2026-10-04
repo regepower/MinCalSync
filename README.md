@@ -98,3 +98,7 @@ MIT
 ## Author
 
 Built by Trolle (@regepower)
+
+## Support
+
+This app weighs less than a photo. Support its development on [Liberapay](https://liberapay.com/regepower/donate).
