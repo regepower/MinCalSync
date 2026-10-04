@@ -23,7 +23,7 @@ android {
             create("release") {
                 storeFile = file(keystorePath)
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS") ?: "mincalsync"
+                keyAlias = System.getenv("KEY_ALIAS") ?: "regepower"
                 // keytool's default PKCS12 keystores use the store password for the key.
                 keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
             }
