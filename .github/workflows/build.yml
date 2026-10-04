@@ -52,7 +52,9 @@ jobs:
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             # Logs are not readable via the API; annotations are.
-            grep -E "^e: |error:|Error:|What went wrong|^> |Caused by" "$RUNNER_TEMP/release.log" | head -20 \
+            { grep -E "^e: |^ERROR|error:" "$RUNNER_TEMP/release.log"; \
+              sed -n '/What went wrong/,/\* Try/p' "$RUNNER_TEMP/release.log"; } \
+              | grep -v "^> Task" | head -30 \
               | while IFS= read -r line; do echo "::error::$line"; done
           fi
           exit "$status"
