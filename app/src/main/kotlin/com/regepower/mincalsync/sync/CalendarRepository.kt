@@ -26,8 +26,8 @@ data class CalendarInfo(
     val accountName: String,
     val accountType: String,
     val writable: Boolean,
+    val color: Int = 0,
 ) {
-    val label: String get() = "$displayName ($accountName)"
     val ref: CalendarRef get() = CalendarRef(accountType, accountName, displayName)
 }
 
@@ -41,6 +41,7 @@ class CalendarRepository(private val resolver: ContentResolver) {
             Calendars.ACCOUNT_NAME,
             Calendars.ACCOUNT_TYPE,
             Calendars.CALENDAR_ACCESS_LEVEL,
+            Calendars.CALENDAR_COLOR,
         )
         val result = mutableListOf<CalendarInfo>()
         resolver.query(Calendars.CONTENT_URI, projection, null, null, null)?.use { c ->
@@ -51,6 +52,7 @@ class CalendarRepository(private val resolver: ContentResolver) {
                     accountName = c.getString(2).orEmpty(),
                     accountType = c.getString(3).orEmpty(),
                     writable = c.getInt(4) >= Calendars.CAL_ACCESS_CONTRIBUTOR,
+                    color = c.getInt(5),
                 )
             }
         }

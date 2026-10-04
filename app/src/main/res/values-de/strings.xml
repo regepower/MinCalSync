@@ -43,4 +43,7 @@
     <string name="cfg_loaded">Konfiguration geladen</string>
     <string name="cfg_invalid">Keine gültige MinCalSync-Konfiguration</string>
     <string name="cfg_error">Datei konnte nicht geschrieben werden</string>
+    <string name="cal_birthdays">Geburtstage</string>
+    <string name="cal_local">Auf diesem Gerät</string>
+    <string name="cal_xiaomi_account">Xiaomi-Konto %1$s</string>
 </resources>

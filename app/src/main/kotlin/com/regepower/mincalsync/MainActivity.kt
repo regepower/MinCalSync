@@ -3,7 +3,6 @@ package com.regepower.mincalsync
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -225,7 +224,7 @@ class MainActivity : Activity() {
     /** Tonal when chosen, error container while still missing. */
     private fun showChoice(button: Button, calendar: CalendarInfo?) {
         if (calendar != null) {
-            button.text = calendar.label
+            button.text = CalendarPicker.label(this, calendar)
             style(button, R.color.md_container, R.color.md_on_container)
         } else {
             button.text = getString(R.string.pick_calendar)
@@ -253,19 +252,7 @@ class MainActivity : Activity() {
         options: List<CalendarInfo>,
         selected: CalendarInfo?,
         onPick: (CalendarInfo) -> Unit,
-    ) {
-        val builder = AlertDialog.Builder(this).setTitle(title)
-        if (options.isEmpty()) {
-            builder.setMessage(R.string.no_calendars).setPositiveButton(android.R.string.ok, null)
-        } else {
-            val labels = options.map { it.label }.toTypedArray()
-            builder.setSingleChoiceItems(labels, options.indexOfFirst { it.id == selected?.id }) { dialog, which ->
-                onPick(options[which])
-                dialog.dismiss()
-            }
-        }
-        builder.show()
-    }
+    ) = CalendarPicker.show(this, title, options, selected, onPick)
 
     private fun onCalendarsChanged() {
         refreshCalendarButtons()
