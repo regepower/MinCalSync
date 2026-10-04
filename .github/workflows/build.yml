@@ -47,7 +47,15 @@ jobs:
           fi
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
           export KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
-          gradle --no-daemon assembleRelease
+          set +e
+          gradle --no-daemon assembleRelease 2>&1 | tee "$RUNNER_TEMP/release.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Logs are not readable via the API; annotations are.
+            grep -E "^e: |error:|Error:|What went wrong|^> |Caused by" "$RUNNER_TEMP/release.log" | head -20 \
+              | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit "$status"
 
       - name: Size report
         if: always()
