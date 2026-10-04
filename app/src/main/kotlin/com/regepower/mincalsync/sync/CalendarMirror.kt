@@ -20,17 +20,25 @@ class SyncException(val reason: Reason) : Exception(reason.name) {
  * moved or cancelled ones) is copied as a single, plain event. That keeps the copy
  * correct without re-implementing recurrence rules and exceptions.
  *
+ * Ownership: [MirrorStore] maps source instances to target rows, and every copy carries an
+ * invisible [CopyMarker] with the source tag. When the map is missing (new phone, account
+ * re-added, row IDs changed) copies are re-adopted instead of duplicated: first marked rows,
+ * then - in case the marker got lost - unmarked rows with the same title, start and end.
+ *
  * Safety rules:
- *  - Only rows recorded in [MirrorStore] are ever updated or deleted.
- *  - Before updating or deleting, the row must still carry the title/start/end we wrote
- *    (or already hold the new source values). Anything else is left untouched.
+ *  - Only rows recorded in the map or carrying our marker are ever updated or deleted.
+ *  - A mapped row is only changed if it still holds the title/start/end we wrote (or
+ *    already the new source values); a copy the user edited keeps its content and only
+ *    loses the marker, so it is never touched again.
+ *  - Marked copies without a source in the window are deleted; anything outside the
+ *    window is never touched.
  *  - There is no erase-and-rebuild step; an interrupted run leaves at worst some stale
  *    copies, never an emptied calendar.
- *  - Copies that fall out of the past edge of the window are kept, just no longer tracked.
  */
 class CalendarMirror(
     private val resolver: ContentResolver,
     private val store: MirrorStore,
+    private val ownTag: Int,
 ) {
 
     data class Stats(
@@ -50,16 +58,23 @@ class CalendarMirror(
         val end: Long,
         val allDay: Boolean,
         val timeZone: String?,
-    )
+    ) {
+        val slot: Triple<String, Long, Long> get() = Triple(title, begin, end)
+    }
 
     private data class TargetRow(
+        val id: Long,
         val title: String,
+        /** Without markers. */
         val description: String,
         val location: String,
         val start: Long,
         val end: Long,
         val allDay: Boolean,
+        val markerTag: Int?,
     ) {
+        val slot: Triple<String, Long, Long> get() = Triple(title, start, end)
+
         fun carriesFingerprint(entry: MirrorEntry) =
             title == entry.title && start == entry.start && end == entry.end
 
@@ -80,13 +95,21 @@ class CalendarMirror(
         val stats = Stats()
         val seenKeys = HashSet<String>()
 
+        // Forget map entries whose row is gone; what is left over is up for adoption.
+        mapping.values.removeAll { it.targetEventId !in targetRows }
+        val mappedIds = mapping.values.mapTo(HashSet()) { it.targetEventId }
+        val unmapped = targetRows.values.filter { it.id !in mappedIds }
+        val ownUnmapped = unmapped.filter { it.markerTag == ownTag }.groupByTo(HashMap()) { it.slot }
+        val plainUnmapped = unmapped.filter { it.markerTag == null }.groupByTo(HashMap()) { it.slot }
+
         for (source in sourceInstances) {
             seenKeys += source.key
             val entry = mapping[source.key]
             val row = entry?.let { targetRows[it.targetEventId] }
 
             when {
-                entry != null && row != null && row.hasContentOf(source) -> {
+                entry != null && row != null && row.hasContentOf(source) &&
+                    (row.markerTag == ownTag || entry.marked) -> {
                     stats.unchanged++
                     val current = entry.copy(title = source.title, start = source.begin, end = source.end)
                     if (current != entry) {
@@ -96,8 +119,11 @@ class CalendarMirror(
                 }
 
                 entry != null && row != null && row.carriesFingerprint(entry) -> {
+                    // Changed in the source, or written by a version without marker.
                     if (updateEvent(entry.targetEventId, source)) {
-                        mapping[source.key] = entry.copy(title = source.title, start = source.begin, end = source.end)
+                        mapping[source.key] = entry.copy(
+                            title = source.title, start = source.begin, end = source.end, marked = true,
+                        )
                         store.save(mapping)
                         stats.updated++
                     } else {
@@ -106,17 +132,31 @@ class CalendarMirror(
                 }
 
                 else -> {
-                    // Not copied yet, or the old copy is gone / no longer provably ours.
-                    val newId = insertEvent(targetCalendarId, source)
-                    if (newId != null) {
-                        mapping[source.key] = MirrorEntry(newId, source.title, source.begin, source.end)
-                        store.save(mapping)
-                        stats.created++
+                    // A copy the user edited stays, but is no longer ours.
+                    if (entry != null && row != null) release(row)
+                    val adopted = ownUnmapped.take(source.slot) ?: plainUnmapped.take(source.slot)
+                    if (adopted != null) {
+                        adopt(adopted, source, mapping, stats)
                     } else {
-                        stats.failed++
+                        // Not copied yet, or the old copy is gone / no longer provably ours.
+                        val newId = insertEvent(targetCalendarId, source)
+                        if (newId != null) {
+                            mapping[source.key] = MirrorEntry(newId, source.title, source.begin, source.end, marked = true)
+                            store.save(mapping)
+                            stats.created++
+                        } else {
+                            stats.failed++
+                        }
                     }
                 }
             }
+        }
+
+        // An empty source is more likely a half-finished account sync than a calendar that
+        // really lost every event: delete nothing then, the next run catches up.
+        if (sourceInstances.isEmpty()) {
+            store.save(mapping)
+            return stats
         }
 
         val iterator = mapping.entries.iterator()
@@ -127,7 +167,10 @@ class CalendarMirror(
             when {
                 row == null -> iterator.remove()
                 entry.start < windowStart -> iterator.remove()
-                !row.carriesFingerprint(entry) -> iterator.remove()
+                !row.carriesFingerprint(entry) -> {
+                    release(row)
+                    iterator.remove()
+                }
                 else -> {
                     if (deleteEvent(entry.targetEventId)) {
                         iterator.remove()
@@ -139,7 +182,45 @@ class CalendarMirror(
             }
         }
         store.save(mapping)
+
+        // Our marked copies that no source instance claimed: removed from the source
+        // while the map was lost. Only inside the window, like everything else.
+        for (row in ownUnmapped.values.flatten()) {
+            if (row.start < windowStart || row.start >= windowEnd) continue
+            if (deleteEvent(row.id)) stats.deleted++ else stats.failed++
+        }
         return stats
+    }
+
+    /** Removes our marker from a copy the user edited, so it is never touched again. */
+    private fun release(row: TargetRow) {
+        if (row.markerTag != ownTag) return
+        perEvent(Unit) {
+            val values = ContentValues().apply { put(Events.DESCRIPTION, row.description) }
+            resolver.update(ContentUris.withAppendedId(Events.CONTENT_URI, row.id), values, null, null)
+        }
+    }
+
+    private fun adopt(row: TargetRow, source: SourceInstance, mapping: MutableMap<String, MirrorEntry>, stats: Stats) {
+        if (row.hasContentOf(source) && row.markerTag == ownTag) {
+            stats.unchanged++
+        } else if (updateEvent(row.id, source)) {
+            stats.updated++
+        } else {
+            stats.failed++
+            return
+        }
+        mapping[source.key] = MirrorEntry(row.id, source.title, source.begin, source.end, marked = true)
+        store.save(mapping)
+    }
+
+    private fun HashMap<Triple<String, Long, Long>, MutableList<TargetRow>>.take(
+        slot: Triple<String, Long, Long>,
+    ): TargetRow? {
+        val rows = get(slot) ?: return null
+        val row = rows.removeAt(0)
+        if (rows.isEmpty()) remove(slot)
+        return row
     }
 
     private fun calendarExists(calendarId: Long): Boolean =
@@ -222,7 +303,7 @@ class CalendarMirror(
                 result += SourceInstance(
                     key = key,
                     title = c.getString(3).orEmpty(),
-                    description = c.getString(4).orEmpty(),
+                    description = CopyMarker.strip(c.getString(4).orEmpty()),
                     location = c.getString(5).orEmpty(),
                     begin = begin,
                     end = c.getLong(2),
@@ -250,13 +331,16 @@ class CalendarMirror(
         val result = HashMap<Long, TargetRow>()
         resolver.query(Events.CONTENT_URI, projection, selection, args, null)?.use { c ->
             while (c.moveToNext()) {
+                val rawDescription = c.getString(2).orEmpty()
                 result[c.getLong(0)] = TargetRow(
+                    id = c.getLong(0),
                     title = c.getString(1).orEmpty(),
-                    description = c.getString(2).orEmpty(),
+                    description = CopyMarker.strip(rawDescription),
                     location = c.getString(3).orEmpty(),
                     start = c.getLong(4),
                     end = if (c.isNull(5)) 0L else c.getLong(5),
                     allDay = c.getInt(6) == 1,
+                    markerTag = CopyMarker.tagOf(rawDescription),
                 )
             }
         }
@@ -265,7 +349,7 @@ class CalendarMirror(
 
     private fun contentValuesFor(source: SourceInstance) = ContentValues().apply {
         put(Events.TITLE, source.title)
-        put(Events.DESCRIPTION, source.description)
+        put(Events.DESCRIPTION, source.description + CopyMarker.encode(ownTag))
         put(Events.EVENT_LOCATION, source.location)
         put(Events.DTSTART, source.begin)
         put(Events.DTEND, source.end)

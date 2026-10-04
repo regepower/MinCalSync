@@ -13,8 +13,8 @@ android {
         applicationId = "com.regepower.mincalsync"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     // Release key comes from CI secrets. Always the same key, otherwise updates need a

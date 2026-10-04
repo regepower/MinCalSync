@@ -49,7 +49,17 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
           export KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
           echo "SIGNING=release-key" >> "$GITHUB_ENV"
-          gradle --no-daemon assembleRelease
+          set +e
+          gradle --no-daemon assembleRelease 2>&1 | tee "$RUNNER_TEMP/release.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Logs are not readable via the API; annotations are.
+            { grep -E "^e: |^ERROR|error:" "$RUNNER_TEMP/release.log"; \
+              sed -n '/What went wrong/,/\* Try/p' "$RUNNER_TEMP/release.log"; } \
+              | grep -v "^> Task" | head -30 \
+              | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit "$status"
 
       - name: Size report
         if: always()
