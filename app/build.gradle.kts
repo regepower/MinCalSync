@@ -23,9 +23,11 @@ android {
             create("release") {
                 storeFile = file(keystorePath)
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS") ?: "regepower"
+                keyAlias = System.getenv("KEY_ALIAS")?.takeIf { it.isNotBlank() } ?: "regepower"
                 // keytool's default PKCS12 keystores use the store password for the key.
-                keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
+                // CI passes unset secrets as empty strings, so blank means "not set".
+                keyPassword = System.getenv("KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+                    ?: System.getenv("KEYSTORE_PASSWORD")
             }
         }
     }
