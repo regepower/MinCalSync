@@ -10,54 +10,161 @@ import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
-import android.text.TextUtils
+import android.provider.DocumentsContract
+import android.text.Spanned
+import android.text.style.StyleSpan
+import android.text.util.Linkify
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.io.IOException
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
+import java.time.format.FormatStyle
 
 /**
  * Shared top row of all our apps: large bold app name, then save config, load config and help.
  * Drop-in: copy with ConfigIO.kt, the icons ic_save/ic_load/ic_help and the strings help, help_ok,
- * help_text, donate, donate_text, donate_url, cfg_save, cfg_load, cfg_saved, cfg_loaded, cfg_invalid, cfg_error; forward
- * onActivityResult to [onResult].
+ * help_text, help_open, help_closed, help_expanded, help_collapsed, foss_text, source_url, help_footer, donate, donate_text, donate_url, cfg_save, cfg_load, cfg_saved, cfg_loaded, cfg_invalid, cfg_error, cfg_overwrite,
+ * cfg_overwrite_ok, cfg_other_place; forward onActivityResult to [onResult].
+ * Config file: picked with the system file dialog (JSON filter); the last file is remembered and
+ * overwritten after asking, so no "(1)" copies; works with cloud providers too.
  */
 object AppShell {
     const val REQ_SAVE = 7301
     const val REQ_LOAD = 7302
+    private const val SHELL_PREFS = "appshell"
+    private const val KEY_FILE = "file"
 
-    fun header(a: Activity): LinearLayout = LinearLayout(a).apply {
-        gravity = Gravity.CENTER_VERTICAL
-        addView(
-            TextView(a).apply {
-                text = a.getString(R.string.app_name)
-                textSize = 24f
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(a.getColor(R.color.md_on_container))
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        )
-        val size = (44 * a.resources.displayMetrics.density).toInt()
-        addView(icon(a, R.drawable.ic_save, R.string.cfg_save) { startSave(a) }, LinearLayout.LayoutParams(size, size))
-        addView(icon(a, R.drawable.ic_load, R.string.cfg_load) { startLoad(a) }, LinearLayout.LayoutParams(size, size))
-        addView(icon(a, R.drawable.ic_help, R.string.help) { showHelp(a) }, LinearLayout.LayoutParams(size, size))
-    }
+    /** Former app names whose config files still load after a rename. */
+    var legacyNames: List<String> = emptyList()
 
-    /** Help text, then app name + version and the donation line; neutral button opens Liberapay. */
+    /** [sp]/[keep] are needed here because overwriting the remembered file needs no picker. */
+    fun header(
+        a: Activity,
+        sp: SharedPreferences,
+        keep: (String) -> Boolean = { false },
+    ): LinearLayout =
+        LinearLayout(a).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(
+                TextView(a).apply {
+                    text = a.getString(R.string.app_name)
+                    textSize = 24f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(a.getColor(R.color.md_on_container))
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            val size = (44 * a.resources.displayMetrics.density).toInt()
+            addView(icon(a, R.drawable.ic_save, R.string.cfg_save) { startSave(a, sp, keep) }, LinearLayout.LayoutParams(size, size))
+            addView(icon(a, R.drawable.ic_load, R.string.cfg_load) { startLoad(a) }, LinearLayout.LayoutParams(size, size))
+            addView(icon(a, R.drawable.ic_help, R.string.help) { showHelp(a) }, LinearLayout.LayoutParams(size, size))
+        }
+
+    /**
+     * Help with foldable chapters: every "<b>Title</b>\n…" block of help_text becomes a tappable
+     * title; only the first chapter starts open. Below: app name + version, donation line and the
+     * FOSS note with the source link. Neutral button opens Liberapay.
+     */
     fun showHelp(a: Activity) {
-        val about = "\n\n${a.getString(R.string.app_name)} ${version(a)}\n${a.getString(R.string.donate_text)}"
+        val dp = a.resources.displayMetrics.density
+
+        fun px(v: Int) = (v * dp).toInt()
+        val list =
+            LinearLayout(a).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(px(24), px(8), px(24), px(8))
+            }
+        val ripple = TypedValue().also { a.theme.resolveAttribute(android.R.attr.selectableItemBackground, it, true) }.resourceId
+        var first = true
+        for ((title, body) in helpChapters(a.getText(R.string.help_text))) {
+            val bodyView =
+                TextView(a).apply {
+                    text = body
+                    setTextColor(a.getColor(R.color.md_on_surface))
+                    setPadding(0, 0, 0, px(8))
+                    visibility = if (title == null || first) View.VISIBLE else View.GONE
+                }
+            if (title != null) {
+                first = false
+                val head =
+                    TextView(a).apply {
+                        textSize = 16f
+                        setTypeface(typeface, Typeface.BOLD)
+                        setTextColor(a.getColor(R.color.md_primary))
+                        gravity = Gravity.CENTER_VERTICAL
+                        minHeight = px(44)
+                        setBackgroundResource(ripple)
+                    }
+
+                fun label() {
+                    val open = bodyView.visibility == View.VISIBLE
+                    head.text = a.getString(if (open) R.string.help_open else R.string.help_closed, title)
+                    // stateDescription is API 30+, minSdk is 29.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        head.stateDescription = a.getString(if (open) R.string.help_expanded else R.string.help_collapsed)
+                    }
+                }
+                label()
+                head.setOnClickListener {
+                    bodyView.visibility = if (bodyView.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                    label()
+                }
+                list.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            list.addView(bodyView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        list.addView(
+            TextView(a).apply {
+                textSize = 13f
+                setTextColor(a.getColor(R.color.md_on_surface_variant))
+                setPadding(0, px(12), 0, 0)
+                // Before setText, so the source URL becomes a tappable link.
+                autoLinkMask = Linkify.WEB_URLS
+                text =
+                    a.getString(
+                        R.string.help_footer,
+                        a.getString(R.string.app_name),
+                        version(a),
+                        buildDate(a),
+                        a.getString(R.string.donate_text),
+                        a.getString(R.string.foss_text, a.getString(R.string.source_url)),
+                    )
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
         AlertDialog
             .Builder(a)
             .setTitle(R.string.help)
-            .setMessage(TextUtils.concat(a.getText(R.string.help_text), about))
+            .setView(ScrollView(a).apply { addView(list) })
             .setPositiveButton(R.string.help_ok, null)
             .setNeutralButton(R.string.donate) { _, _ -> openDonate(a) }
             .show()
+    }
+
+    /** Splits help_text at blank lines; a chapter starting with a bold line gets that line as title. */
+    private fun helpChapters(text: CharSequence): List<Pair<String?, CharSequence>> {
+        val plain = text.toString()
+        val out = mutableListOf<Pair<String?, CharSequence>>()
+        var start = 0
+        while (start < plain.length) {
+            val end = plain.indexOf("\n\n", start).let { if (it < 0) plain.length else it }
+            val chunk = text.subSequence(start, end)
+            val nl = chunk.indexOf('\n')
+            val bold = nl > 0 && chunk is Spanned && chunk.getSpans(0, nl, StyleSpan::class.java).isNotEmpty()
+            out += if (bold) chunk.subSequence(0, nl).toString() to chunk.subSequence(nl + 1, chunk.length) else null to chunk
+            start = end + 2
+        }
+        return out
     }
 
     /** versionName from the package (no BuildConfig needed). */
@@ -73,6 +180,25 @@ object AppShell {
                 }
             info.versionName.orEmpty()
         } catch (e: PackageManager.NameNotFoundException) {
+            ""
+        }
+
+    /** Build day from the manifest meta-data "build_date", in the device's date format; "" if absent. */
+    private fun buildDate(a: Activity): String =
+        try {
+            val pm = a.packageManager
+            val info =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getApplicationInfo(a.packageName, PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getApplicationInfo(a.packageName, PackageManager.GET_META_DATA)
+                }
+            val iso = info.metaData?.getString("build_date").orEmpty()
+            DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).format(LocalDate.parse(iso))
+        } catch (e: PackageManager.NameNotFoundException) {
+            ""
+        } catch (e: DateTimeParseException) {
             ""
         }
 
@@ -96,16 +222,22 @@ object AppShell {
         data: Intent?,
         sp: SharedPreferences,
         keep: (String) -> Boolean = { false },
-        onLoaded: () -> Unit = { a.recreate() }
+        onLoaded: () -> Unit = { a.recreate() },
     ): Boolean {
         if (requestCode != REQ_SAVE && requestCode != REQ_LOAD) return false
         val uri = data?.data
         if (resultCode != Activity.RESULT_OK || uri == null) return true
-        if (requestCode == REQ_SAVE) save(a, uri, sp, keep) else load(a, uri, sp, keep, onLoaded)
+        rememberFile(a, uri)
+        if (requestCode == REQ_SAVE) write(a, uri, sp, keep) else load(a, uri, sp, keep, onLoaded)
         return true
     }
 
-    private fun icon(a: Activity, res: Int, desc: Int, onClick: () -> Unit) = ImageButton(a).apply {
+    private fun icon(
+        a: Activity,
+        res: Int,
+        desc: Int,
+        onClick: () -> Unit,
+    ) = ImageButton(a).apply {
         setImageResource(res)
         imageTintList = ColorStateList.valueOf(a.getColor(R.color.md_primary))
         val tv = TypedValue()
@@ -116,44 +248,145 @@ object AppShell {
         setOnClickListener { onClick() }
     }
 
-    private fun startSave(a: Activity) {
-        val i = Intent(Intent.ACTION_CREATE_DOCUMENT)
-            .addCategory(Intent.CATEGORY_OPENABLE)
-            .setType(ConfigIO.MIME)
-            .putExtra(Intent.EXTRA_TITLE, "${a.getString(R.string.app_name)}.json")
+    /** Suggested file name: "<AppName>.json". */
+    private fun fileName(a: Activity) = "${a.getString(R.string.app_name)}.json"
+
+    /**
+     * The picker can only create files ("MinCalSync(1).json" if the name exists), never overwrite.
+     * So the last saved or loaded file is remembered and overwritten after asking; works for
+     * local folders and cloud providers (Drive etc.) alike.
+     */
+    private fun startSave(
+        a: Activity,
+        sp: SharedPreferences,
+        keep: (String) -> Boolean,
+    ) {
+        val last = lastFile(a)
+        val name = last?.let { displayName(a, it) }
+        // A file named after an old app name (e.g. ZenDay.json loaded after a rename) is not
+        // offered for overwriting: the picker opens in the same folder with the new name.
+        val legacy = name != null && legacyNames.any { name.startsWith(it, ignoreCase = true) }
+        if (last == null || name == null || legacy) {
+            pickNewFile(a)
+            return
+        }
+        AlertDialog
+            .Builder(a)
+            .setTitle(R.string.cfg_save)
+            .setMessage(a.getString(R.string.cfg_overwrite, name))
+            .setPositiveButton(R.string.cfg_overwrite_ok) { _, _ -> write(a, last, sp, keep) }
+            .setNeutralButton(R.string.cfg_other_place) { _, _ -> pickNewFile(a) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun pickNewFile(a: Activity) {
+        val i =
+            Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(ConfigIO.MIME)
+                .putExtra(Intent.EXTRA_TITLE, fileName(a))
+        lastFile(a)?.let { i.putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
         @Suppress("DEPRECATION")
         a.startActivityForResult(i, REQ_SAVE)
     }
 
     private fun startLoad(a: Activity) {
-        val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
-            .addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("*/*")
-            .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(ConfigIO.MIME, "text/plain", "application/octet-stream"))
+        val i =
+            Intent(Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(ConfigIO.MIME)
+        lastFile(a)?.let { i.putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
         @Suppress("DEPRECATION")
         a.startActivityForResult(i, REQ_LOAD)
     }
 
-    private fun save(a: Activity, uri: Uri, sp: SharedPreferences, keep: (String) -> Boolean) {
+    /** Keeps access to the file across restarts. Not part of the exported config. */
+    private fun rememberFile(
+        a: Activity,
+        uri: Uri,
+    ) {
+        val rw = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         try {
-            a.contentResolver.openOutputStream(uri, "wt")?.use {
-                it.write(ConfigIO.toJson(sp, a.getString(R.string.app_name), keep).toByteArray())
-            }
+            a.contentResolver.takePersistableUriPermission(uri, rw)
+        } catch (e: SecurityException) {
+            // Some providers grant read only; then the next save falls back to the picker.
+            Log.w("AppShell", "persist file", e)
+        }
+        shellPrefs(a).edit().putString(KEY_FILE, uri.toString()).apply()
+    }
+
+    private fun lastFile(a: Activity): Uri? = shellPrefs(a).getString(KEY_FILE, null)?.let(Uri::parse)
+
+    private fun shellPrefs(a: Activity) = a.getSharedPreferences(SHELL_PREFS, Activity.MODE_PRIVATE)
+
+    /** Name of a remembered file, or null if it is gone or no longer accessible. */
+    private fun displayName(
+        a: Activity,
+        uri: Uri,
+    ): String? =
+        try {
+            a.contentResolver
+                .query(uri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        } catch (e: SecurityException) {
+            null
+        } catch (e: IllegalArgumentException) {
+            null
+        } catch (e: UnsupportedOperationException) {
+            null
+        }
+
+    private fun write(
+        a: Activity,
+        uri: Uri,
+        sp: SharedPreferences,
+        keep: (String) -> Boolean,
+    ) {
+        val bytes = ConfigIO.toJson(sp, a.getString(R.string.app_name), keep).toByteArray()
+        try {
+            // "wt" truncates; some cloud providers only know "w" (which replaces the content there).
+            val out =
+                try {
+                    a.contentResolver.openOutputStream(uri, "wt")
+                } catch (e: IllegalArgumentException) {
+                    a.contentResolver.openOutputStream(uri, "w")
+                } catch (e: java.io.FileNotFoundException) {
+                    a.contentResolver.openOutputStream(uri, "w")
+                } ?: throw IOException("no stream")
+            out.use { it.write(bytes) }
             toast(a, R.string.cfg_saved)
         } catch (e: IOException) {
+            Log.w("AppShell", "save config", e)
+            toast(a, R.string.cfg_error)
+        } catch (e: SecurityException) {
+            Log.w("AppShell", "save config", e)
+            toast(a, R.string.cfg_error)
+        } catch (e: IllegalArgumentException) {
             Log.w("AppShell", "save config", e)
             toast(a, R.string.cfg_error)
         }
     }
 
-    private fun load(a: Activity, uri: Uri, sp: SharedPreferences, keep: (String) -> Boolean, onLoaded: () -> Unit) {
-        val json = try {
-            a.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-        } catch (e: IOException) {
-            Log.w("AppShell", "load config", e)
-            null
-        }
-        if (json == null || !ConfigIO.fromJson(sp, json, a.getString(R.string.app_name), keep)) {
+    private fun load(
+        a: Activity,
+        uri: Uri,
+        sp: SharedPreferences,
+        keep: (String) -> Boolean,
+        onLoaded: () -> Unit,
+    ) {
+        val json =
+            try {
+                a.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+            } catch (e: IOException) {
+                Log.w("AppShell", "load config", e)
+                null
+            } catch (e: SecurityException) {
+                Log.w("AppShell", "load config", e)
+                null
+            }
+        val names = listOf(a.getString(R.string.app_name)) + legacyNames
+        if (json == null || names.none { ConfigIO.fromJson(sp, json, it, keep) }) {
             toast(a, R.string.cfg_invalid)
             return
         }
@@ -161,5 +394,8 @@ object AppShell {
         onLoaded()
     }
 
-    private fun toast(a: Activity, res: Int) = Toast.makeText(a, res, Toast.LENGTH_SHORT).show()
+    private fun toast(
+        a: Activity,
+        res: Int,
+    ) = Toast.makeText(a, res, Toast.LENGTH_SHORT).show()
 }

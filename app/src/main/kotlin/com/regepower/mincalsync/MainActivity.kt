@@ -89,9 +89,12 @@ class MainActivity : Activity() {
         handler.post(statusPoller)
     }
 
+    private var configLoaded = false
+
     override fun onPause() {
         handler.removeCallbacks(statusPoller)
-        applyInterval()
+        // After a config import the old field value must not overwrite the loaded interval.
+        if (!configLoaded) applyInterval()
         super.onPause()
     }
 
@@ -100,6 +103,7 @@ class MainActivity : Activity() {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
         AppShell.onResult(this, requestCode, resultCode, data, settings.prefs, SyncSettings.DEVICE_KEYS::contains) {
+            configLoaded = true
             if (settings.autoSync) SyncScheduler.schedulePeriodic(this, settings.intervalHours) else SyncScheduler.cancel(this)
             recreate()
         }
@@ -118,7 +122,7 @@ class MainActivity : Activity() {
             setPadding(px(16), px(8), px(16), px(16))
         }
 
-        root.addView(AppShell.header(this))
+        root.addView(AppShell.header(this, settings.prefs, SyncSettings.DEVICE_KEYS::contains))
 
         permissionBox = card().apply {
             addView(TextView(context).apply { text = getString(R.string.perm_missing) })

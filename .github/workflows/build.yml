@@ -78,7 +78,7 @@ jobs:
             awk -F'\t' '$1 ~ /^P/ {n=split($4,a,"."); if (n<=2) print $3, $4}' "$RUNNER_TEMP/dex.txt" | sort -rn | head -15
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: "Release APK: ${{ env.APK_BYTES }} bytes (${{ env.SIGNING }})"
+      - name: "Release APK 1.0.${{ github.run_number }}: ${{ env.APK_BYTES }} bytes (${{ env.SIGNING }})"
         run: echo "release apk ${{ env.APK_BYTES }} bytes"
 
       - uses: actions/upload-artifact@v6

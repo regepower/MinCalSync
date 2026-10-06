@@ -30,5 +30,10 @@
             android:name=".sync.SyncJobService"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- Build day for the help dialog (set in build.gradle.kts). -->
+        <meta-data
+            android:name="build_date"
+            android:value="${buildDate}" />
     </application>
 </manifest>

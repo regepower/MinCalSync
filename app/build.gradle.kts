@@ -1,4 +1,6 @@
 import java.security.KeyStore
+import java.time.LocalDate
+import java.time.ZoneId
 
 plugins {
     id("com.android.application")
@@ -13,8 +15,13 @@ android {
         applicationId = "com.regepower.mincalsync"
         minSdk = 29
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.2.0"
+        // Major.minor by hand for bigger changes; the last part is the CI build number (#57 → 1.0.57).
+        // versionCode follows it, so every CI build installs as an update. Local builds: 1.0.0.
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+        versionCode = maxOf(build, 1)
+        versionName = "1.0.$build"
+        // Build day for the help dialog (manifest meta-data, no BuildConfig/resource needed).
+        manifestPlaceholders["buildDate"] = LocalDate.now(ZoneId.of("Europe/Berlin")).toString()
     }
 
     // Release key comes from CI secrets. Always the same key, otherwise updates need a
@@ -44,7 +51,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Local builds without secrets: debug key, so the APK stays installable.
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
@@ -57,6 +64,14 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            // Measured in the size lab (Oct 2026): no Kotlin null-check intrinsics and string
+            // templates as plain StringBuilder code instead of invokedynamic.
+            freeCompilerArgs.addAll(
+                "-Xno-param-assertions",
+                "-Xno-call-assertions",
+                "-Xno-receiver-assertions",
+                "-Xstring-concat=inline",
+            )
         }
     }
 
