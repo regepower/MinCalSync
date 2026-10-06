@@ -93,7 +93,7 @@ Enable battery optimization exemption:
 
 ## License
 
-MIT
+[GPL-3.0](LICENSE) – free software: use, modify and share it; derived versions must also be licensed under GPL-3.0.
 
 ## Author
 
