@@ -67,6 +67,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        UpdateCheck.onStart(this)
         refresh()
     }
 

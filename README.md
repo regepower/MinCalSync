@@ -57,7 +57,7 @@ The app will now automatically sync events at the specified interval in the back
 
 - `READ_CALENDAR` - Read events from source calendar
 - `WRITE_CALENDAR` - Write events to target calendar
-- `INTERNET` - (Optional) For future cloud sync features
+- `INTERNET` - update check against GitHub releases (once a day, can be switched off in the help)
 - `RECEIVE_BOOT_COMPLETED` - Restore sync worker on device restart
 
 ## Architecture
